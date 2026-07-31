@@ -1,299 +1,217 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { History, Mic, AlertCircle, Activity, Power, ShieldCheck, BarChart2 } from 'lucide-react';
-import { openDB } from 'idb';
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Acoustic Pro Meter - Home Monitor</title>
+    <!-- Tailwind CSS per una grafica moderna e pulita -->
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#111318] text-slate-100 font-sans select-none min-h-screen p-3 md:p-6">
 
-const DB_NAME = 'AcousticMonitorDB';
-const STORE_NAME = 'events';
-
-const initDB = async () => {
-  return openDB(DB_NAME, 1, {
-    upgrade(db) {
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
-      }
-    },
-  });
-};
-
-export default function App() {
-  const [isMonitoring, setIsMonitoring] = useState(false);
-  const [db, setDb] = useState(null);
-  const [currentLevel, setCurrentLevel] = useState('0.0');
-  const [baseline] = useState(40);
-  const [threshold] = useState(15);
-  const [logs, setLogs] = useState([]);
-  const [frequencies, setFrequencies] = useState(new Array(32).fill(10));
-
-  const audioContext = useRef(null);
-  const analyser = useRef(null);
-  const source = useRef(null);
-  const streamRef = useRef(null);
-  const isMonitoringRef = useRef(false);
-  const lastLogTime = useRef(0);
-
-  useEffect(() => {
-    isMonitoringRef.current = isMonitoring;
-  }, [isMonitoring]);
-
-  useEffect(() => {
-    initDB().then((database) => {
-      setDb(database);
-    }).catch(err => console.error("Errore init DB:", err));
-  }, []);
-
-  useEffect(() => {
-    if (db) {
-      fetchLogs(db);
-    }
-  }, [db]);
-
-  const fetchLogs = async (database) => {
-    try {
-      const activeDb = database || db;
-      if (!activeDb) return;
-      const data = await activeDb.getAll(STORE_NAME);
-      setLogs(data.slice(-10).reverse());
-    } catch (err) {
-      console.error("Errore recupero log:", err);
-    }
-  };
-
-  const logEvent = async (level) => {
-    if (!db) return;
-    const now = Date.now();
-    if (now - lastLogTime.current < 5000) return;
-    lastLogTime.current = now;
-
-    try {
-      const event = {
-        timestamp: new Date().toISOString(),
-        level: level,
-        type: 'Superamento soglia'
-      };
-      await db.add(STORE_NAME, event);
-      fetchLogs();
-    } catch (err) {
-      console.error("Errore salvataggio evento:", err);
-    }
-  };
-
-  const startMonitoring = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      streamRef.current = stream;
-      
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      audioContext.current = new AudioContextClass();
-      analyser.current = audioContext.current.createAnalyser();
-      analyser.current.fftSize = 64;
-      
-      source.current = audioContext.current.createMediaStreamSource(stream);
-      source.current.connect(analyser.current);
-      
-      setIsMonitoring(true);
-      processAudio();
-    } catch (err) {
-      console.error("Accesso microfono negato o non supportato:", err);
-    }
-  };
-
-  const stopMonitoring = () => {
-    setIsMonitoring(false);
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-    }
-    if (audioContext.current && audioContext.current.state !== 'closed') {
-      audioContext.current.close();
-    }
-    setCurrentLevel('0.0');
-    setFrequencies(new Array(32).fill(10));
-  };
-
-  const processAudio = () => {
-    const dataArray = new Uint8Array(analyser.current.frequencyBinCount);
-    const timeDataArray = new Uint8Array(analyser.current.frequencyBinCount);
-    
-    const tick = () => {
-      if (!isMonitoringRef.current) return;
-      
-      analyser.current.getByteFrequencyData(dataArray);
-      analyser.current.getByteTimeDomainData(timeDataArray);
-      
-      // Aggiorna spettro frequenze per il grafico stile Pro-L/analyzer
-      const mappedFreqs = Array.from(dataArray).slice(0, 32).map(val => Math.max(10, (val / 255) * 100));
-      setFrequencies(mappedFreqs);
-
-      let sum = 0;
-      for (let i = 0; i < timeDataArray.length; i++) {
-        let val = (timeDataArray[i] - 128) / 128;
-        sum += val * val;
-      }
-      let rms = Math.sqrt(sum / timeDataArray.length);
-      let calculatedDb = 20 * Math.log10(rms > 0 ? rms : 1e-6) + 100;
-      
-      const formattedDb = calculatedDb.toFixed(1);
-      setCurrentLevel(formattedDb);
-
-      if (calculatedDb > baseline + threshold) {
-        logEvent(formattedDb);
-      }
-
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  };
-
-  const numericLevel = parseFloat(currentLevel);
-  const isExceeding = numericLevel > (baseline + threshold);
-  
-  // Calcolo angolo per il meter circolare (da -135deg a +135deg)
-  const rotationDeg = Math.min(Math.max((numericLevel / 120) * 270 - 135, -135), 135);
-
-  return (
-    <div className="min-h-screen bg-[#111318] text-slate-100 p-3 md:p-6 font-sans select-none">
-      <div className="max-w-6xl mx-auto space-y-4">
+    <div class="max-w-6xl mx-auto space-y-4">
         
-        {/* Header stile Plugin Pro */}
-        <header className="flex justify-between items-center bg-[#181b22] border border-slate-800 px-4 py-2.5 rounded-xl shadow-inner">
-          <div className="flex items-center gap-3">
-            <div className="bg-blue-600/20 p-2 rounded-lg border border-blue-500/30">
-              <Activity className="text-blue-400 w-5 h-5" />
+        <!-- Header -->
+        <header class="flex justify-between items-center bg-[#181b22] border border-slate-800 px-4 py-3 rounded-xl shadow-lg">
+            <div class="flex items-center gap-3">
+                <div class="bg-blue-600/20 p-2 rounded-lg border border-blue-500/30">
+                    <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                </div>
+                <div>
+                    <h1 class="text-sm md:text-base font-bold tracking-wider text-slate-200">ACOUSTIC PRO METER</h1>
+                    <p class="text-slate-400 text-[10px] tracking-widest uppercase">Realtime Home Analysis Suite</p>
+                </div>
             </div>
-            <div>
-              <h1 className="text-base font-bold tracking-wider text-slate-200">ACOUSTIC PRO METER</h1>
-              <p className="text-slate-400 text-[10px] tracking-widest uppercase">Realtime Home Analysis Suite</p>
+            <div class="flex items-center gap-3">
+                <div class="hidden sm:flex items-center gap-1.5 bg-[#111318] px-3 py-1 rounded-md text-xs text-slate-400 border border-slate-800">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Offline Safe
+                </div>
+                <button id="toggleBtn" onclick="toggleMonitoring()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs py-2 px-5 rounded-lg shadow transition-all flex items-center gap-1.5">
+                    Start Monitor
+                </button>
             </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-1.5 bg-[#111318] px-3 py-1 rounded-md text-xs text-slate-400 border border-slate-800">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Offline Safe
-            </div>
-            {!isMonitoring ? (
-              <button onClick={startMonitoring} className="bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs py-2 px-4 rounded-lg shadow transition-all flex items-center gap-1.5">
-                <Power className="w-3.5 h-3.5" /> Start
-              </button>
-            ) : (
-              <button onClick={stopMonitoring} className="bg-rose-600/80 hover:bg-rose-600 text-white font-semibold text-xs py-2 px-4 rounded-lg shadow transition-all flex items-center gap-1.5">
-                <Power className="w-3.5 h-3.5" /> Stop
-              </button>
-            )}
-          </div>
         </header>
 
-        {/* Layout Principale in stile DAW (Dashboard Audio) */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-          
-          {/* Box 1: Meter Circolare stile Pro-L */}
-          <div className="md:col-span-5 bg-[#181b22] border border-slate-800/80 rounded-2xl p-4 shadow-xl flex flex-col justify-between relative overflow-hidden">
-            <div className="flex justify-between items-center text-xs text-slate-400 mb-2">
-              <span className="font-semibold uppercase tracking-wider flex items-center gap-1">
-                <Mic className="w-3.5 h-3.5 text-blue-400" /> Loudness Meter
-              </span>
-              <span className={`w-2 h-2 rounded-full ${isMonitoring ? (isExceeding ? 'bg-red-500 animate-ping' : 'bg-emerald-500 animate-pulse') : 'bg-slate-600'}`} />
-            </div>
-
-            {/* Display Circolare Analogico */}
-            <div className="relative w-48 h-48 mx-auto my-2 flex items-center justify-center">
-              {/* Sfondo traccia cerchio */}
-              <div className="absolute inset-0 rounded-full border-4 border-slate-800/80 border-t-blue-500/50 rotate-45"></div>
-              
-              {/* Lancetta / Indicatore rotante */}
-              <div 
-                className="absolute w-1 h-20 bg-blue-500 bottom-1/2 left-1/2 origin-bottom transition-transform duration-75 rounded-full shadow-[0_0_10px_rgba(59,130,246,0.6)]"
-                style={{ transform: `translateX(-50%) rotate(${rotationDeg}deg)` }}
-              ></div>
-
-              {/* Contenuto Centrale */}
-              <div className="bg-[#111318] w-32 h-32 rounded-full flex flex-col items-center justify-center border border-slate-800 shadow-inner z-10">
-                <span className="text-2xl font-black font-mono tracking-tighter text-white">{currentLevel}</span>
-                <span className="text-[10px] text-slate-400 font-semibold">dB SPL</span>
-              </div>
-            </div>
-
-            {/* Sotto-metriche */}
-            <div className="grid grid-cols-2 gap-2 mt-2 pt-3 border-t border-slate-800/60 text-center">
-              <div className="bg-[#111318] p-2 rounded-xl border border-slate-800/50">
-                <div className="text-[10px] text-slate-400 uppercase">Baseline</div>
-                <div className="text-sm font-mono font-bold text-slate-200">{baseline} dB</div>
-              </div>
-              <div className="bg-[#111318] p-2 rounded-xl border border-slate-800/50">
-                <div className="text-[10px] text-slate-400 uppercase">Soglia Max</div>
-                <div className="text-sm font-mono font-bold text-rose-400">{baseline + threshold} dB</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Box 2: Analizzatore di Spettro (Frequenze stile Equalizzatore) */}
-          <div className="md:col-span-7 bg-[#181b22] border border-slate-800/80 rounded-2xl p-4 shadow-xl flex flex-col justify-between">
-            <div className="flex justify-between items-center text-xs text-slate-400 mb-2">
-              <span className="font-semibold uppercase tracking-wider flex items-center gap-1">
-                <BarChart2 className="w-3.5 h-3.5 text-blue-400" /> Frequency Spectrum Analyzer
-              </span>
-              <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-mono">FFT Realtime</span>
-            </div>
-
-            {/* Grafico Barre Frequenze */}
-            <div className="h-44 bg-[#111318] border border-slate-800/60 rounded-xl p-3 flex items-end justify-between gap-1 relative overflow-hidden">
-              {/* Linee griglia di sfondo */}
-              <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-10 p-3">
-                <div className="border-b border-slate-500 w-full"></div>
-                <div className="border-b border-slate-500 w-full"></div>
-                <div className="border-b border-slate-500 w-full"></div>
-              </div>
-
-              {frequencies.map((height, idx) => (
-                <div key={idx} className="w-full bg-slate-800/40 h-full rounded-t-sm flex items-end overflow-hidden">
-                  <div 
-                    className="w-full bg-gradient-to-t from-blue-600 to-cyan-400 transition-all duration-75 rounded-t-sm opacity-90"
-                    style={{ height: `${isMonitoring ? height : 5}%` }}
-                  ></div>
+        <!-- Griglia Principale -->
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+            
+            <!-- Meter Circolare -->
+            <div class="md:col-span-5 bg-[#181b22] border border-slate-800/80 rounded-2xl p-4 shadow-xl flex flex-col justify-between">
+                <div class="flex justify-between items-center text-xs text-slate-400 mb-2">
+                    <span class="font-semibold uppercase tracking-wider flex items-center gap-1">Loudness Meter</span>
+                    <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span>
                 </div>
-              ))}
+
+                <div class="relative w-48 h-48 mx-auto my-2 flex items-center justify-center">
+                    <div class="absolute inset-0 rounded-full border-4 border-slate-800 border-t-blue-500/60 rotate-45"></div>
+                    <div id="needle" class="absolute w-1 h-20 bg-blue-500 bottom-1/2 left-1/2 origin-bottom transition-transform duration-75 rounded-full shadow-[0_0_10px_rgba(59,130,246,0.6)]" style="transform: translateX(-50%) rotate(-135deg);"></div>
+                    <div class="bg-[#111318] w-32 h-32 rounded-full flex flex-col items-center justify-center border border-slate-800 shadow-inner z-10">
+                        <span id="currentLevel" class="text-2xl font-black font-mono tracking-tighter text-white">0.0</span>
+                        <span class="text-[10px] text-slate-400 font-semibold">dB SPL</span>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-2 mt-2 pt-3 border-t border-slate-800/60 text-center">
+                    <div class="bg-[#111318] p-2 rounded-xl border border-slate-800/50">
+                        <div class="text-[10px] text-slate-400 uppercase">Baseline</div>
+                        <div class="text-sm font-mono font-bold text-slate-200">40 dB</div>
+                    </div>
+                    <div class="bg-[#111318] p-2 rounded-xl border border-slate-800/50">
+                        <div class="text-[10px] text-slate-400 uppercase">Soglia Max</div>
+                        <div class="text-sm font-mono font-bold text-rose-400">55 dB</div>
+                    </div>
+                </div>
             </div>
 
-            <div className="flex justify-between text-[10px] text-slate-500 mt-2 px-1 font-mono">
-              <span>20Hz</span>
-              <span>100Hz</span>
-              <span>1kHz</span>
-              <span>10kHz</span>
-              <span>20kHz</span>
+            <!-- Equalizzatore / Spettro -->
+            <div class="md:col-span-7 bg-[#181b22] border border-slate-800/80 rounded-2xl p-4 shadow-xl flex flex-col justify-between">
+                <div class="flex justify-between items-center text-xs text-slate-400 mb-2">
+                    <span class="font-semibold uppercase tracking-wider">Frequency Spectrum Analyzer</span>
+                    <span class="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-mono">FFT Realtime</span>
+                </div>
+
+                <div id="spectrumContainer" class="h-44 bg-[#111318] border border-slate-800/60 rounded-xl p-3 flex items-end justify-between gap-1 relative overflow-hidden">
+                    <!-- Le barre verranno generate dinamicamente via JS -->
+                </div>
+
+                <div class="flex justify-between text-[10px] text-slate-500 mt-2 px-1 font-mono">
+                    <span>20Hz</span><span>100Hz</span><span>1kHz</span><span>10kHz</span><span>20kHz</span>
+                </div>
             </div>
-          </div>
 
         </div>
 
-        {/* Box 3: Storico Sforamenti (Timeline orizzontale/lista pulita) */}
-        <div className="bg-[#181b22] border border-slate-800/80 rounded-2xl p-4 shadow-xl">
-          <div className="flex justify-between items-center mb-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5 text-slate-300">
-              <History className="w-3.5 h-3.5 text-blue-400" /> Registro Eventi & Sforamenti
-            </h2>
-            <span className="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded">Ultimi 10</span>
-          </div>
-
-          <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-            {logs.length === 0 ? (
-              <div className="text-center py-6 text-slate-500 flex flex-col items-center justify-center gap-1">
-                <AlertCircle className="w-5 h-5 opacity-40" />
-                <p className="text-xs">Nessun picco anomalo registrato.</p>
-              </div>
-            ) : (
-              logs.map((log) => (
-                <div key={log.id} className="flex justify-between items-center p-2.5 bg-[#111318] border border-slate-800/60 rounded-xl text-xs transition-colors hover:border-slate-700">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]" />
-                    <span className="text-slate-300 font-mono">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                  </div>
-                  <span className="font-mono font-bold text-rose-400 bg-rose-500/10 px-2.5 py-0.5 rounded border border-rose-500/20">
-                    {log.level} dB
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
+        <!-- Registro Eventi -->
+        <div class="bg-[#181b22] border border-slate-800/80 rounded-2xl p-4 shadow-xl">
+            <div class="flex justify-between items-center mb-3">
+                <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-300">Registro Sforamenti Rilevati</h2>
+                <span class="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded">Ultimi eventi</span>
+            </div>
+            <div id="logContainer" class="space-y-2 max-h-40 overflow-y-auto pr-1">
+                <div class="text-center py-6 text-slate-500 text-xs">Nessun picco anomalo registrato. Avvia il monitoraggio.</div>
+            </div>
         </div>
 
-      </div>
     </div>
-  );
-}
+
+    <!-- Script di Logica Audio e Grafica -->
+    <script>
+        let isMonitoring = false;
+        let audioCtx, analyser, source, stream;
+        const baseline = 40;
+        const threshold = 15;
+        const spectrumContainer = document.getElementById('spectrumContainer');
+        
+        // Genera barre spettro iniziali
+        const bars = [];
+        for (let i = 0; i < 28; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'w-full bg-slate-800/40 h-full rounded-t-sm flex items-end overflow-hidden';
+            bar.innerHTML = '<div class="w-full bg-gradient-to-t from-blue-600 to-cyan-400 rounded-t-sm transition-all duration-75" style="height: 5%;"></div>';
+            spectrumContainer.appendChild(bar);
+            bars.push(bar.firstElementChild);
+        }
+
+        async function toggleMonitoring() {
+            const btn = document.getElementById('toggleBtn');
+            const statusDot = document.getElementById('statusDot');
+
+            if (!isMonitoring) {
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    analyser = audioCtx.createAnalyser();
+                    analyser.fftSize = 64;
+                    
+                    source = audioCtx.createMediaStreamSource(stream);
+                    source.connect(analyser);
+
+                    isMonitoring = true;
+                    btn.textContent = "Stop";
+                    btn.className = "bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs py-2 px-5 rounded-lg shadow transition-all flex items-center gap-1.5";
+                    statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
+                    
+                    processAudio();
+                } catch (err) {
+                    alert("Accesso al microfono negato o non supportato dal browser.");
+                }
+            } else {
+                isMonitoring = false;
+                if (stream) stream.getTracks().forEach(track => track.stop());
+                if (audioCtx) audioCtx.close();
+
+                btn.textContent = "Start Monitor";
+                btn.className = "bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs py-2 px-5 rounded-lg shadow transition-all flex items-center gap-1.5";
+                statusDot.className = "w-2.5 h-2.5 rounded-full bg-slate-600";
+                document.getElementById('currentLevel').textContent = "0.0";
+                document.getElementById('needle').style.transform = `translateX(-50%) rotate(-135deg)`;
+                bars.forEach(b => b.style.height = '5%');
+            }
+        }
+
+        function processAudio() {
+            if (!isMonitoring) return;
+
+            const freqData = new Uint8Array(analyser.frequencyBinCount);
+            const timeData = new Uint8Array(analyser.frequencyBinCount);
+            
+            analyser.getByteFrequencyData(freqData);
+            analyser.getByteTimeDomainData(timeData);
+
+            // Aggiorna barre spettro
+            for (let i = 0; i < bars.length; i++) {
+                const height = Math.max(8, (freqData[i] / 255) * 100);
+                bars[i].style.height = height + '%';
+            }
+
+            // Calcolo RMS e Decibel
+            let sum = 0;
+            for (let i = 0; i < timeData.length; i++) {
+                let val = (timeData[i] - 128) / 128;
+                sum += val * val;
+            }
+            let rms = Math.sqrt(sum / timeData.length);
+            let calculatedDb = 20 * Math.log10(rms > 0 ? rms : 1e-6) + 100;
+            let formattedDb = calculatedDb.toFixed(1);
+
+            document.getElementById('currentLevel').textContent = formattedDb;
+
+            // Muovi lancetta (da -135deg a +135deg)
+            let rotation = Math.min(Math.max((calculatedDb / 120) * 270 - 135, -135), 135);
+            document.getElementById('needle').style.transform = `translateX(-50%) rotate(${rotation}deg)`;
+
+            // Controllo sforamento soglia
+            if (calculatedDb > (baseline + threshold)) {
+                addLog(formattedDb);
+            }
+
+            requestAnimationFrame(processAudio);
+        }
+
+        let lastLog = 0;
+        function addLog(db) {
+            const now = Date.now();
+            if (now - lastLog < 4000) evitaSpam = true; // Anti-spam log
+            else {
+                lastLog = now;
+                const container = document.getElementById('logContainer');
+                if (container.children.length === 1 && container.children[0].tagName === 'DIV' && container.children[0].classList.contains('text-center')) {
+                    container.innerHTML = '';
+                }
+                const timeStr = new Date().toLocaleTimeString();
+                const row = document.createElement('div');
+                row.className = 'flex justify-between items-center p-2.5 bg-[#111318] border border-slate-800/60 rounded-xl text-xs';
+                row.innerHTML = `
+                    <div class="flex items-center gap-2.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]"></span>
+                        <span class="text-slate-300 font-mono">${timeStr}</span>
+                    </div>
+                    <span class="font-mono font-bold text-rose-400 bg-rose-500/10 px-2.5 py-0.5 rounded border border-rose-500/20">${db} dB</span>
+                `;
+                container.prepend(row);
+                if (container.children.length > 10) container.lastChild.remove();
+            }
+        }
+    </script>
+</body>
+</html>
