@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Volume2, AlertTriangle, History, Settings, Mic } from 'lucide-react';
+import { History, Mic } from 'lucide-react';
 import { openDB } from 'idb';
 
 const DB_NAME = 'AcousticMonitorDB';
@@ -10,7 +10,9 @@ const STORE_NAME = 'events';
 const initDB = async () => {
   return openDB(DB_NAME, 1, {
     upgrade(db) {
-      db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+      }
     },
   });
 };
@@ -18,31 +20,95 @@ const initDB = async () => {
 export default function App() {
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [db, setDb] = useState(null);
-  const [currentLevel, setCurrentLevel] = useState(0);
-  const [baseline, setBaseline] = useState(40); // Baseline in dB
-  const [threshold, setThreshold] = useState(15); // Delta threshold
+  const [currentLevel, setCurrentLevel] = useState('0.0');
+  const [baseline] = useState(40); // Baseline in dB
+  const [threshold] = useState(15); // Delta threshold
   const [logs, setLogs] = useState([]);
-  
+
   const audioContext = useRef(null);
   const analyser = useRef(null);
   const source = useRef(null);
+  const streamRef = useRef(null);
+  const isMonitoringRef = useRef(false);
+  const lastLogTime = useRef(0);
 
+  // Aggiorna la ref quando cambia lo stato
   useEffect(() => {
-    initDB().then(setDb);
+    isMonitoringRef.current = isMonitoring;
+  }, [isMonitoring]);
+
+  // Inizializzazione Database
+  useEffect(() => {
+    initDB().then((database) => {
+      setDb(database);
+    }).catch(err => console.error("Errore init DB:", err));
   }, []);
+
+  // Fetch dei log quando il db è pronto
+  useEffect(() => {
+    if (db) {
+      fetchLogs(db);
+    }
+  }, [db]);
+
+  const fetchLogs = async (database) => {
+    try {
+      const activeDb = database || db;
+      if (!activeDb) return;
+      const data = await activeDb.getAll(STORE_NAME);
+      setLogs(data.slice(-10).reverse());
+    } catch (err) {
+      console.error("Errore recupero log:", err);
+    }
+  };
+
+  const logEvent = async (level) => {
+    if (!db) return;
+    const now = Date.now();
+    // Evita spam di log (massimo 1 evento ogni 5 secondi)
+    if (now - lastLogTime.current < 5000) return;
+    lastLogTime.current = now;
+
+    try {
+      const event = {
+        timestamp: new Date().toISOString(),
+        level: level,
+        type: 'Superamento soglia'
+      };
+      await db.add(STORE_NAME, event);
+      fetchLogs();
+    } catch (err) {
+      console.error("Errore salvataggio evento:", err);
+    }
+  };
 
   const startMonitoring = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioContext.current = new (window.AudioContext || window.webkitAudioContext)();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      streamRef.current = stream;
+      
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      audioContext.current = new AudioContextClass();
       analyser.current = audioContext.current.createAnalyser();
+      analyser.current.fftSize = 512;
+      
       source.current = audioContext.current.createMediaStreamSource(stream);
       source.current.connect(analyser.current);
       
       setIsMonitoring(true);
       processAudio();
     } catch (err) {
-      console.error("Accesso microfono negato:", err);
+      console.error("Accesso microfono negato o non supportato:", err);
+    }
+  };
+
+  const stopMonitoring = () => {
+    setIsMonitoring(false);
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+    if (audioContext.current && audioContext.current.state !== 'closed') {
+      audioContext.current.close();
     }
   };
 
@@ -50,42 +116,28 @@ export default function App() {
     const dataArray = new Uint8Array(analyser.current.frequencyBinCount);
     
     const tick = () => {
-      if (!isMonitoring) return;
+      if (!isMonitoringRef.current) return;
+      
       analyser.current.getByteTimeDomainData(dataArray);
       
-      // Calcolo RMS semplificato
       let sum = 0;
       for (let i = 0; i < dataArray.length; i++) {
         let val = (dataArray[i] - 128) / 128;
         sum += val * val;
       }
       let rms = Math.sqrt(sum / dataArray.length);
-      let db = 20 * Math.log10(rms > 0 ? rms : 1e-6) + 100; // Offset calibrazione
+      let calculatedDb = 20 * Math.log10(rms > 0 ? rms : 1e-6) + 100;
       
-      setCurrentLevel(db.toFixed(1));
+      const formattedDb = calculatedDb.toFixed(1);
+      setCurrentLevel(formattedDb);
 
-      if (db > baseline + threshold) {
-        logEvent(db.toFixed(1));
+      if (calculatedDb > baseline + threshold) {
+        logEvent(formattedDb);
       }
 
       requestAnimationFrame(tick);
     };
-    tick();
-  };
-
-  const logEvent = async (level) => {
-    const event = {
-      timestamp: new Date().toISOString(),
-      level: level,
-      type: 'Superamento soglia'
-    };
-    await db.add(STORE_NAME, event);
-    fetchLogs();
-  };
-
-  const fetchLogs = async () => {
-    const data = await db.getAll(STORE_NAME);
-    setLogs(data.slice(-10).reverse());
+    requestAnimationFrame(tick);
   };
 
   return (
@@ -95,27 +147,41 @@ export default function App() {
         <p className="text-slate-500">Monitoraggio privacy-first per convivenza civile</p>
       </header>
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 max-w-5xl mx-auto">
         <Card className="col-span-1 shadow-lg">
-          <CardHeader><CardTitle className="flex items-center gap-2"><Mic/> Stato</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><Mic className="w-5 h-5"/> Stato</CardTitle>
+          </CardHeader>
           <CardContent className="text-center">
-            <div className="text-6xl font-mono my-4">{currentLevel} <span className="text-xl">dB</span></div>
-            <Button onClick={startMonitoring} disabled={isMonitoring} className="w-full">
-              {isMonitoring ? "Monitoraggio attivo" : "Avvia Monitoraggio"}
-            </Button>
+            <div className="text-6xl font-mono my-4 text-slate-800">{currentLevel} <span className="text-xl">dB</span></div>
+            {!isMonitoring ? (
+              <Button onClick={startMonitoring} className="w-full bg-blue-600 hover:bg-blue-700 text-white">
+                Avvia Monitoraggio
+              </Button>
+            ) : (
+              <Button onClick={stopMonitoring} className="w-full bg-red-600 hover:bg-red-700 text-white">
+                Interrompi
+              </Button>
+            )}
           </CardContent>
         </Card>
 
         <Card className="col-span-1 md:col-span-2 shadow-lg">
-          <CardHeader><CardTitle className="flex items-center gap-2"><History/> Ultimi Eventi</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><History className="w-5 h-5"/> Ultimi Eventi</CardTitle>
+          </CardHeader>
           <CardContent>
-            <div className="space-y-2">
-              {logs.map((log) => (
-                <div key={log.id} className="flex justify-between p-2 bg-slate-100 rounded text-sm">
-                  <span>{new Date(log.timestamp).toLocaleTimeString()}</span>
-                  <span className="font-bold text-red-600">{log.level} dB</span>
-                </div>
-              ))}
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {logs.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-4">Nessun superamento registrato</p>
+              ) : (
+                logs.map((log) => (
+                  <div key={log.id} className="flex justify-between items-center p-2 bg-slate-100 rounded text-sm">
+                    <span className="text-slate-600">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                    <span className="font-bold text-red-600">{log.level} dB</span>
+                  </div>
+                ))
+              )}
             </div>
           </CardContent>
         </Card>
